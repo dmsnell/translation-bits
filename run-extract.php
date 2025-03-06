@@ -24,4 +24,6 @@ $strings = Translation_Processor::extract( 'test-page.php', <<<HTML
 HTML
 );
 
+echo( json_encode( $strings, JSON_PRETTY_PRINT ) ) . PHP_EOL . PHP_EOL;
+
 echo Translation_Processor::strings_to_pot_fragment( $strings ) . PHP_EOL;
