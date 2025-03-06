@@ -17,9 +17,29 @@ require_once '/Users/dmsnell/code/wordpress-develop/src/wp-includes/html-api/cla
 require_once '/Users/dmsnell/code/wordpress-develop/src/wp-includes/html-api/class-wp-html-processor.php';
 require_once __DIR__ . '/class.translation-processor.php';
 
+$langs = array(
+	'en-US' => array(
+		'css-lang'   => 'lang:en-US',
+	),
+	'de-DE' => array(
+		'css-lang'    => 'lang:de-DE',
+		'Translation' => 'Ubersetzung',
+		'test'        => 'Probe',
+		'%1$d book'   => 'ein Buch',
+		'%1$d books'  => '%1$d Bücher',
+	)
+);
+
+$lang    = 'de-DE';
 $html    = file_get_contents( __DIR__ . '/example.html' );
-$strings = Translation_Processor::extract( 'test-page.php', $html );
+$strings = Translation_Processor::translate( $html, function ( $token ) use ( $langs, $lang ){
+	$format = match ( $token['func'] ) {
+		'_n' => intval( $token['args'][2] ) === 1 ? $token['args'][0] : $token['args'][1],
+		default => $token['args'][0]
+	};
 
-echo( json_encode( $strings, JSON_PRETTY_PRINT ) ) . PHP_EOL . PHP_EOL;
+	$format = $langs[ $lang ][ $format ] ?? $langs['en-US'][ $format ] ?? $format;
+	return '_n' === $token['func'] ? sprintf( $format, intval( $token['args'][2] ) ) : $format;
+} );
 
-echo Translation_Processor::strings_to_pot_fragment( $strings ) . PHP_EOL;
+echo $strings . PHP_EOL;

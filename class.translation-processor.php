@@ -9,6 +9,8 @@
  *   - Add translate function for render.
  */
 class Translation_Processor extends WP_HTML_Tag_Processor {
+	private $raw_lexical_updates = array();
+
 	public static function extract( string $filename, string $html ): array {
 		$strings = array();
 		$offsets = array();
@@ -74,7 +76,7 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 					if ( ! isset( $token ) ) {
 						continue;
 					}
-					
+
 					$context = '_x' === $token['func'] ? $token['args'][1] ?? '' : '';
 					$domain  = (
 						( '__' === $token['func'] ? $token['args'][1] ?? '' :
@@ -84,7 +86,7 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 					);
 
 					$key = "{$token['funcall']}\x00{$token['args'][0]}\x00{$context}\x00{$domain}\x00{$token['note']}";
-			
+
 					if ( ! isset( $strings[ $key ] ) ) {
 						$strings[ $key ] = array();
 					}
@@ -114,6 +116,80 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 		}
 
 		return $outputs;
+	}
+
+	public static function translate( string $html, Callable $translator ): string {
+		$processor    = new self( $html );
+		$reflector    = new ReflectionClass( $processor );
+		$token_at     = $reflector->getParentClass()->getProperty( 'token_starts_at' );
+		$token_length = $reflector->getParentClass()->getProperty( 'token_length' );
+		$attributes   = $reflector->getParentClass()->getProperty( 'attributes' );
+
+		while ( $processor->next_token() ) {
+			$token_type = $processor->get_token_type();
+
+			if ( ! in_array( $token_type, array( '#comment', '#tag' ), true ) ) {
+				continue;
+			}
+
+			if ( '#comment' === $token_type && WP_HTML_Tag_Processor::COMMENT_AS_PI_NODE_LOOKALIKE !== $processor->get_comment_type() ) {
+				continue;
+			}
+
+			$raw_text = substr( $processor->html, $token_at->getValue( $processor ), $token_length->getValue( $processor ) );
+
+			// Ensure that it’s possible for a Translation Bit to appear here.
+			if ( 1 !== preg_match( '~<?wp[^>]+>~', $raw_text ) ) {
+				continue;
+			}
+
+			if ( '#comment' === $token_type ) {
+				$token = self::next_translation_bit( $raw_text );
+				if ( ! isset( $token ) || 0 !== $token['at'] ) {
+					continue;
+				}
+
+				$processor->dangerously_replace_span(
+					$token_at->getValue( $processor ) + $token['at'],
+					$token['length'],
+					$translator( $token )
+				);
+			}
+
+			if ( '#tag' === $token_type ) {
+				foreach ( $attributes->getValue( $processor ) ?? array() as $attribute ) {
+					if ( $attribute->is_true ) {
+						continue;
+					}
+
+					$raw_value = substr( $html, $attribute->value_starts_at, $attribute->value_length );
+					$token     = self::next_translation_bit( $raw_value );
+					if ( ! isset( $token ) ) {
+						continue;
+					}
+
+					$processor->dangerously_replace_span(
+						$attribute->value_starts_at + $token['at'],
+						$token['length'],
+						$translator( $token )
+					);
+				}
+			}
+		}
+
+		$output_processor = new WP_HTML_Tag_Processor( $html );
+		$output_processor->lexical_updates = $processor->raw_lexical_updates;
+		return $output_processor->get_updated_html();
+	}
+
+	private function dangerously_replace_span( int $at, int $length, string $new_html ): bool {
+		$this->raw_lexical_updates[] = new WP_HTML_Text_Replacement(
+			$at,
+			$length,
+			WP_HTML_Processor::normalize( $new_html )
+		);
+
+		return true;
 	}
 
 	public static function offsets_to_location( string $text, array $offsets ): array {
@@ -223,7 +299,7 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 			$arg          = substr( $args, $at, $next_quote - $at );
 			$arg          = str_replace( "\\{$first_quote}", $first_quote, $arg );
 			$args_array[] = $arg;
-		
+
 			$at = $next_quote + 1;
 			if ( $at < strlen( $args ) ) {
 				$at += strspn( $args, ", \t\f\r\n", $at );

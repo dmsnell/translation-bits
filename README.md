@@ -18,22 +18,18 @@ added into a `.pot` file for translation. Successive results from extracting
 different files can be combined and merged for generated `.pot`s for an
 entire project.
 
-## Example
+The `Translation_Processor::translate( $html, $translator )` method takes an
+HTML input string and a translator function, which when called will supply a
+translation, and return a modified input string where the Translation Bits have
+been replaced by their appropriate translations if possible, falling back to
+the English strings when missing.
+
+## Extraction Example
 
 ```php
 <?php
-$strings = Translation_Processor::extract(
-	'test-page.php',
-	<<<'HTML'
-		<h1 name="some <?wp _x( 'test', 'noun', 'zs-sync' ); ?> thing" class="<?wp /* translators: a CSS class name indicating the language */ __( 'css-lang' ); ?>"><?wp __( "Title: " ); ?>The post title</h1>
-        <div>This is a <?wp __( "Translation" ); ?> embedded within the HTML.</div>
-        <p>There is a story to tell about <?wp __( "Translation" ); ?> and it’s fun.</p>
-        <p>I have <?wp /* translators: 1: number of books. */ _n( '%1$d book', '%1$d books' ); ?></p>
-		HTML
-);
-
+$strings = Translation_Processor::extract( 'test-page.php', file_get_contents( 'example.html' ) );
 echo json_encode( $strings, JSON_PRETTY_PRINT );
-
 echo Translation_Processor::strings_to_pot_fragment( $strings ) . PHP_EOL;
 ```
 
@@ -130,6 +126,17 @@ msgstr ""
 
 ```
 
-## Near-term Roadmap
+## Translation Example
 
- - A render function which performs translations dynamically.
+```php
+<?php
+$lang = 'de-DE';
+echo Translation_Processor::translate( file_get_contents( 'example.html' ), $translation_supplier );
+```
+
+```html
+<h1 name="some Probe thing" class="lang:de-DE">Title: The post title</h1>
+<div>This is a Ubersetzung embedded within the HTML.</div>
+<p>There is a story to tell about Ubersetzung and it’s fun.</p>
+<p>I have 3 Bücher</p>
+```
