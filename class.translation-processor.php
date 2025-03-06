@@ -13,11 +13,12 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 		$strings = array();
 		$offsets = array();
 
-		$processor = new self( $html );
+		$processor  = new self( $html );
+		$reflector  = new ReflectionClass( $processor );
+		$attributes = $reflector->getParentClass()->getProperty( 'attributes' );
 
 		while ( $processor->next_token() ) {
 			$token_type = $processor->get_token_type();
-			$token_name = $processor->get_token_name();
 
 			if ( ! in_array( $token_type, array( '#comment', '#tag' ), true ) ) {
 				continue;
@@ -37,29 +38,82 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 			}
 
 			if ( '#comment' === $token_type ) {
-				$translation_text = self::parse_translation_text( substr( $raw_text, 4, -2 ) );
-				if ( ! isset( $translation_text ) ) {
+				$token = self::next_translation_bit( $raw_text );
+				if ( ! isset( $token ) || 0 !== $token['at'] ) {
 					continue;
 				}
 
-				list( $string ) = $translation_text;
-				if ( ! isset( $strings[ $string ] ) ) {
-					$strings[ $string ] = array();
+				$context = '_x' === $token['func'] ? $token['args'][1] ?? '' : '';
+				$domain  = (
+					( '__' === $token['func'] ? $token['args'][1] ?? '' :
+					( '_x' === $token['func'] ? $token['args'][2] ?? '' :
+					( '_n' === $token['func'] ? $token['args'][3] ?? '' :
+					'' ) ) )
+				);
+
+				$key = "{$token['funcall']}\x00{$token['args'][0]}\x00{$context}\x00{$domain}\x00{$token['note']}";
+
+				if ( ! isset( $strings[ $key ] ) ) {
+					$strings[ $key ] = array();
 				}
 
-				$strings[ $string ][] = $here->start;
-				if ( 0 === count( $offsets ) || $here->start !== $offsets[ count( $offsets ) - 1 ] ) {
-					$offsets[] = $here->start;
+				$strings[ $key ][] = $here->start + $token['at'];
+				if ( 0 === count( $offsets ) || ( $here->start + $token['at'] ) !== $offsets[ count( $offsets ) - 1 ] ) {
+					$offsets[] = $here->start + $token['at'];
+				}
+			}
+
+			if ( '#tag' === $token_type ) {
+				foreach ( $attributes->getValue( $processor ) ?? array() as $attribute ) {
+					if ( $attribute->is_true ) {
+						continue;
+					}
+
+					$raw_value = substr( $html, $attribute->value_starts_at, $attribute->value_length );
+					$token     = self::next_translation_bit( $raw_value );
+					if ( ! isset( $token ) ) {
+						continue;
+					}
+					
+					$context = '_x' === $token['func'] ? $token['args'][1] ?? '' : '';
+					$domain  = (
+						( '__' === $token['func'] ? $token['args'][1] ?? '' :
+						( '_x' === $token['func'] ? $token['args'][2] ?? '' :
+						( '_n' === $token['func'] ? $token['args'][3] ?? '' :
+						'' ) ) )
+					);
+
+					$key = "{$token['funcall']}\x00{$token['args'][0]}\x00{$context}\x00{$domain}\x00{$token['note']}";
+			
+					if ( ! isset( $strings[ $key ] ) ) {
+						$strings[ $key ] = array();
+					}
+
+					$strings[ $key ][] = $attribute->value_starts_at + $token['at'];
+					if ( 0 === count( $offsets ) || ( $attribute->value_starts_at + $token['at'] ) !== $offsets[ count( $offsets ) - 1 ] ) {
+						$offsets[] = $attribute->value_starts_at + $token['at'];
+					}
 				}
 			}
 		}
 
 		$locations = self::offsets_to_location( $html, $offsets );
-		foreach ( $strings as $string => $instances ) {
-			$strings[ $string ] = array_map( fn ( $offset ) => array_merge( array( $filename ), $locations[ $offset ] ), $instances );
+		$outputs   = array();
+
+		foreach ( $strings as $key => $instances ) {
+			list( $funcall, $first_arg, $context, $domain, $comment ) = explode( "\x00", $key );
+			$outputs[ $first_arg ] = array_merge(
+				empty( $comment ) ? array() : array( 'translator_comment' => $comment ),
+				empty( $context ) ? array() : array( 'context' => $context ),
+				empty( $domain ) ? array() : array( 'domain' => $domain ),
+				array(
+					'funcall' => $funcall,
+					'locations' => array_map( fn ( $offset ) => array_merge( array( $filename ), $locations[ $offset ] ), $instances )
+				)
+			);
 		}
 
-		return $strings;
+		return $outputs;
 	}
 
 	public static function offsets_to_location( string $text, array $offsets ): array {
@@ -111,57 +165,83 @@ class Translation_Processor extends WP_HTML_Tag_Processor {
 	public static function strings_to_pot_fragment( array $strings ): string {
 		$fragment = '';
 
-		foreach ( $strings as $string => $locations ) {
+		foreach ( $strings as $string => $info ) {
 			$location_header = '#:';
 
-			foreach ( $locations as $location ) {
+			if ( ! empty( $info['translator_comment'] ) ) {
+				$fragment .= "#. {$info['translator_comment']}\n\n";
+			}
+
+			$context = ! empty( $info['context'] ) ? str_replace( '"', '\\"', $info['context'] ) : null;
+
+			foreach ( $info['locations'] as $location ) {
 				list( $filename, $line, $column ) = $location;
 				$location_header .= " {$filename}:{$line}";
 			}
 
 			$quoted_string = str_replace( '"', '\"', $string );
 
-			$fragment .= <<<MSG
-			{$location_header}
-			msgid "{$quoted_string}"
-			msgstr ""
+			$fragment .= str_replace(
+				"msgctxt \"\"\n",
+				'',
+				<<<MSG
+				{$location_header}
+				msgctxt "{$context}"
+				msgid "{$quoted_string}"
+				msgstr ""
 
 
-			MSG;
+				MSG
+			);
 		}
 
 		return $fragment;
 	}
 
-	public static function parse_translation_text( string $text ): ?array {
-		// Skip leading whitespace.
-		$at = strspn( $text, " \t\f\r\n" );
-
-		if ( 0 !== substr_compare( $text, '__(', $at, 3 ) ) {
-			echo "Doesn’t start a translation\n";
+	private static function next_translation_bit( string $text ): ?array {
+		$pattern = "~<\?wp[ \\t\\f\\r\\n]+(?P<NOTE>\\/\\*((?!\\*\\/)[^>])*\\*\\/[ \\t\\f\\r\\n]+)?(?P<FUNCALL>(?P<FUN>_[_nx])\\([ \\t\\f\\r\\n]*(?P<ARGS>(['\"])(\\\\\\6|((?!\\6).))*\\6[ \\t\\f\\r\\n]*(?:,[ \\t\\f\\r\\n]*(['\"])(\\\\\\9|((?!\\9).))*\\9[ \\t\\f\\r\\n]*)*)\\);)[ \\t\\f\\r\\n]+\\?>~m";
+		if ( 1 !== preg_match( $pattern, $text, $token_match, PREG_OFFSET_CAPTURE ) ) {
+			echo "\e[31mNo match\e[m for \e[35m{$text}\e[m\n";
 			return null;
 		}
 
-		$at += 3 + strspn( $text, " \t\f\r\n", $at + 3 );
-		if ( 1 !== strspn( $text[ $at ], "'\"", 0, 1 ) ) {
-			return null;
+		$args        = $token_match['ARGS'][0];
+		$args_array  = array();
+		$first_quote = $args[0];
+		$at          = 1;
+		while ( $at < strlen( $args ) ) {
+			$next_quote = strpos( $args, $first_quote, $at );
+			if ( false === $next_quote ) {
+				break;
+			}
+
+			if ( $next_quote > $first_quote && '\\' === $args[ $next_quote - 1 ] ) {
+				$at = $next_quote + 1;
+				continue;
+			}
+
+			$arg          = substr( $args, $at, $next_quote - $at );
+			$arg          = str_replace( "\\{$first_quote}", $first_quote, $arg );
+			$args_array[] = $arg;
+		
+			$at = $next_quote + 1;
+			if ( $at < strlen( $args ) ) {
+				$at += strspn( $args, ", \t\f\r\n", $at );
+			}
+			if ( $at >= strlen( $args ) ) {
+				break;
+			}
+
+			$first_quote = $args[ $at++ ];
 		}
 
-		$quote_at = $at;
-		$quote    = $text[ $at ];
-		$end      = $at + strcspn( $text, $quote, $at + 1 ) + 1;
-
-		$at = $end + 1 + strspn( $text, " \t\f\r\n", $end + 1 );
-		if ( 0 !== substr_compare( $text, ');', $at, 2 ) ) {
-			return null;
-		}
-
-		$at += 2 + strspn( $text, " \t\f\r\n", $at + 2 );
-		if ( $at !== strlen( $text ) ) {
-			echo "{$text[ $at ]}\n";
-			return null;
-		}
-
-		return array( substr( $text, $quote_at + 1, $end - $quote_at - 1 ) );
+		return array(
+			'at'      => $token_match[0][1],
+			'length'  => strlen( $token_match[0][0] ),
+			'note'    => trim( substr( $token_match['NOTE'][0], 2, strlen( trim( $token_match['NOTE'][0], " \t\f\r\n" ) ) - 4 ), " \t\f\r\n" ),
+			'funcall' => $token_match['FUNCALL'][0],
+			'func'    => $token_match['FUN'][0],
+			'args'    => $args_array,
+		);
 	}
 }
