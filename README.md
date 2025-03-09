@@ -128,12 +128,22 @@ msgstr ""
 
 ## Translation Example
 
+Untranslated `example.html`:
+```html
+<h1 name="some <?wp _x( 'test', 'noun', 'zs-sync' ); ?> thing" class="<?wp /* translators: a CSS class name indicating the language */ __( 'css-lang' ); ?>"><?wp __( "Title: " ); ?>The post title</h1>
+<div>This is a <?wp __( "Translation" ); ?> embedded within the HTML.</div>
+<p>There is a story to tell about <?wp __( "Translation" ); ?> and it’s fun.</p>
+<p>I have <?wp /* translators: 1: number of books. */ _n( '%1$d book', '%1$d books', "3" ); ?></p>
+```
+
+Translate with this PHP snippet:
 ```php
 <?php
 $lang = 'de-DE';
 echo Translation_Processor::translate( file_get_contents( 'example.html' ), $translation_supplier );
 ```
 
+Translated `example.html`:
 ```html
 <h1 name="some Probe thing" class="lang:de-DE">Title: The post title</h1>
 <div>This is a Ubersetzung embedded within the HTML.</div>
